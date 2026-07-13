@@ -1,217 +1,127 @@
 import streamlit as st
-
 import numpy as np
-
-from astropy.io import fits
-
-from PIL import Image
-
-from astropy.coordinates import SkyCoord, EarthLocation, AltAz
-
-from astropy.time import Time
-
-from datetime import datetime
-
-
-# --- Streamlit 앱 페이지 설정 ---
-
-st.set_page_config(page_title="천문 이미지 분석기", layout="wide")
-
-st.title("🔭 천문 이미지 처리 앱")
-
-
-# --- 파일 업로더 ---
-
-uploaded_file = st.file_uploader(
-
-    "분석할 FITS 파일을 선택하세요.",
-
-    type=['fits', 'fit', 'fz']
-
-)
-
-
-# --- 서울 위치 설정 (고정값) ---
-
-seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=50)  # 서울 위도/경도/고도
-
-
-# --- 현재 시간 (UTC 기준) ---
-
-now = datetime.utcnow()
-
-now_astropy = Time(now)
-
-
-# --- 파일이 업로드되면 실행될 로직 ---
-
-if uploaded_file:
-
-    try:
-
-        with fits.open(uploaded_file) as hdul:
-
-            image_hdu = None
-
-            for hdu in hdul:
-
-                if hdu.data is not None and hdu.is_image:
-
-                    image_hdu = hdu
-
-                    break
-
-
-            if image_hdu is None:
-
-                st.error("파일에서 유효한 이미지 데이터를 찾을 수 없습니다.")
-
-            else:
-
-                header = image_hdu.header
-
-                data = image_hdu.data
-
-                data = np.nan_to_num(data)
-
-
-                st.success(f"**'{uploaded_file.name}'** 파일을 성공적으로 처리했습니다.")
-
-                col1, col2 = st.columns(2)
-
-
-                with col1:
-
-                    st.header("이미지 정보")
-
-                    st.text(f"크기: {data.shape[1]} x {data.shape[0]} 픽셀")
-
-                    if 'OBJECT' in header:
-
-                        st.text(f"관측 대상: {header['OBJECT']}")
-
-                    if 'EXPTIME' in header:
-
-                        st.text(f"노출 시간: {header['EXPTIME']} 초")
-
-
-                    st.header("물리량")
-
-                    mean_brightness = np.mean(data)
-
-                    st.metric(label="이미지 전체 평균 밝기", value=f"{mean_brightness:.2f}")
-
-
-                with col2:
-
-                    st.header("이미지 미리보기")
-
-                    if data.max() == data.min():
-
-                        norm_data = np.zeros(data.shape, dtype=np.uint8)
-
-                    else:
-
-                        scale_min = np.percentile(data, 5)
-
-                        scale_max = np.percentile(data, 99.5)
-
-                        data_clipped = np.clip(data, scale_min, scale_max)
-
-                        norm_data = (255 * (data_clipped - scale_min) / (scale_max - scale_min)).astype(np.uint8)
-
-
-                    img = Image.fromarray(norm_data)
-
-                    st.image(img, caption="업로드된 FITS 이미지", use_container_width=True)
-
-
-
-                # --- 사이드바: 현재 천체 위치 계산 ---
-
-                st.sidebar.header("🧭 현재 천체 위치 (서울 기준)")
-
-
-                if 'RA' in header and 'DEC' in header:
-
-                    try:
-
-                        target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
-
-                        altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
-
-                        altitude = altaz.alt.degree
-
-                        azimuth = altaz.az.degree
-
-
-                        st.sidebar.metric("고도 (°)", f"{altitude:.2f}")
-
-                        st.sidebar.metric("방위각 (°)", f"{azimuth:.2f}")
-
-                    except Exception as e:
-
-                        st.sidebar.warning(f"천체 위치 계산 실패: {e}")
-
-                else:
-
-                    st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
-
-
-    except Exception as e:
-
-        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
-
-        st.warning("파일이 손상되었거나 유효한 FITS 형식이 아닐 수 있습니다.")
-
+import matplotlib.pyplot as plt
+import time
+
+# ----------------------------------------------------------------
+# 1. 페이지 설정 및 스타일 정의
+# ----------------------------------------------------------------
+st.set_page_config(page_title="Dynamo Theory Simulator", layout="wide")
+st.title("🌋 다이나모 이론: 지구 자기장 생성 기전 시뮬레이터")
+st.markdown("지구 외핵의 차동 회전($\\Omega$ 효과)과 코리올리 대류($\\alpha$ 효과)에 의한 자기장 유도를 시각화합니다.")
+st.markdown("---")
+
+# ----------------------------------------------------------------
+# 2. 사이드바: 물리 및 시뮬레이션 파라미터 조절
+# ----------------------------------------------------------------
+st.sidebar.header("⚙️ 시뮬레이션 파라미터 설정")
+
+# 물리적 계수 조절 
+alpha_coeff = st.sidebar.slider("알파 효과 강도 (α-Effect)", 0.0, 5.0, 2.0, 0.1)
+omega_coeff = st.sidebar.slider("오메가 효과 강도 (Ω-Effect)", 0.0, 10.0, 5.0, 0.5)
+eta = st.sidebar.slider("자기 확산도 (Magnetic Diffusivity, η)", 0.1, 2.0, 0.5, 0.1)
+
+# 시뮬레이션 제어 
+grid_size = st.sidebar.slider("그리드 해상도 (Grid Size)", 20, 50, 30, 5)
+dt = 0.01  # 타임 스텝 
+
+# 애니메이션 제어 
+run_simulation = st.sidebar.button("시뮬레이션 시작 / 재개")
+reset_simulation = st.sidebar.button("초기화")
+
+# ----------------------------------------------------------------
+# 3. 세션 상태(Session State) 초기화 (캐싱 및 데이터 유지) 
+# ----------------------------------------------------------------
+if "step" not in st.session_state or reset_simulation:
+    st.session_state.step = 0
+    # 초기 폴로이달 자기장(Bp)과 토로이달 자기장(Bt) 생성
+    X, Y = np.meshgrid(np.linspace(-2, 2, grid_size), np.linspace(-2, 2, grid_size))
+    # 초기 조건: 부드러운 가우시안 형태의 쌍극자 자기장 모사
+    st.session_state.Bp = np.exp(-(X**2 + Y**2)) 
+    st.session_state.Bt = np.zeros_like(X)
+    st.session_state.X = X
+    st.session_state.Y = Y
+
+# ----------------------------------------------------------------
+# 4. 수치해석 엔진 (알파-오메가 다이나모 방정식 FDM 근사) 
+# ----------------------------------------------------------------
+def update_fields(Bp, Bt, alpha, omega, eta, dt):
+    """
+    간략화된 2D 다이나모 방정식의 유한차분법(FDM) 업데이트 
+    dBt/dt = omega * dBp/dx + eta * Laplacian(Bt)
+    dBp/dt = alpha * Bt + eta * Laplacian(Bp)
+    """
+    # 라플라시안(확산 항) 계산을 위한 패딩 연산 [cite: 8]
+    def laplacian(Z):
+        Z_top = np.roll(Z, -1, axis=0)
+        Z_bottom = np.roll(Z, 1, axis=0)
+        Z_left = np.roll(Z, -1, axis=1)
+        Z_right = np.roll(Z, 1, axis=1)
+        return Z_top + Z_bottom + Z_left + Z_right - 4 * Z
+
+    # 1차 도함수 (오메가 효과 전단을 위함) [cite: 15]
+    dBp_dx = (np.roll(Bp, -1, axis=1) - np.roll(Bp, 1, axis=1)) / 2.0
+
+    # 방정식 적용 (Euler method) 
+    lap_Bt = laplacian(Bt)
+    lap_Bp = laplacian(Bp)
+    
+    # Bt는 Bp의 차동회전(오메가 효과)과 자기확산으로 변화 [cite: 15]
+    new_Bt = Bt + dt * (omega * dBp_dx + eta * lap_Bt)
+    # Bp는 Bt의 헬리시티 회오리(알파 효과)와 자기확산으로 변화 [cite: 19]
+    new_Bp = Bp + dt * (alpha * Bt + eta * lap_Bp)
+    
+    return new_Bp, new_Bt
+
+# ----------------------------------------------------------------
+# 5. 메인 레이아웃 및 시각화 실시간 렌더링 
+# ----------------------------------------------------------------
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("🌐 폴로이달 자기장 (Poloidal Field)")
+    st.markdown("남북 방향의 주 자기장 성분입니다. 알파 효과에 의해 유지됩니다[cite: 19].")
+    plot_holder_p = st.empty()
+
+with col2:
+    st.subheader("🌀 토로이달 자기장 (Toroidal Field)")
+    st.markdown("외핵 내부에 갇힌 동서 방향 자기장입니다. 오메가 효과로 증폭됩니다[cite: 15].")
+    plot_holder_t = st.empty()
+
+status_text = st.empty()
+
+# ----------------------------------------------------------------
+# 6. 실시간 애니메이션 루프 
+# ----------------------------------------------------------------
+if run_simulation:
+    while st.session_state.step < 200:  # 최대 200 타임스텝 진행
+        # 필드 업데이트 
+        st.session_state.Bp, st.session_state.Bt = update_fields(
+            st.session_state.Bp, st.session_state.Bt, 
+            alpha_coeff, omega_coeff, eta, dt
+        )
+        st.session_state.step += 1
+        
+        # 폴로이달 필드 시각화 (Matplotlib) 
+        fig_p, ax_p = plt.subplots(figsize=(5, 4))
+        cp = ax_p.contourf(st.session_state.X, st.session_state.Y, st.session_state.Bp, cmap="RdBu_r", levels=20)
+        fig_p.colorbar(cp, ax=ax_p)
+        ax_p.set_title( generosity := f"Step: {st.session_state.step} | Poloidal (Bp)")
+        plot_holder_p.pyplot(fig_p)
+        plt.close(fig_p) # 메모리 누수 방지
+
+        # 토로이달 필드 시각화 
+        fig_t, ax_t = plt.subplots(figsize=(5, 4))
+        ct = ax_t.contourf(st.session_state.X, st.session_state.Y, st.session_state.Bt, cmap="inferno", levels=20)
+        fig_t.colorbar(ct, ax=ax_t)
+        ax_t.set_title(f"Step: {st.session_state.step} | Toroidal (Bt)")
+        plot_holder_t.pyplot(fig_t)
+        plt.close(fig_t) # 메모리 누수 방지
+
+        # 상태 메시지 출력
+        status_text.text(f"현재 시뮬레이션 진행 중... (Step {st.session_state.step}/200)")
+        
+        # 애니메이션 속도 조절 및 렉 방지 
+        time.sleep(0.05)
 else:
-
-    st.info("시작하려면 FITS 파일을 업로드해주세요.")
-
-
-# --- 💬 댓글 기능 (세션 기반) ---
-
-st.divider()
-
-st.header("💬 의견 남기기")
-
-
-if "comments" not in st.session_state:
-
-    st.session_state.comments = []
-
-
-with st.form(key="comment_form"):
-
-    name = st.text_input("이름을 입력하세요", key="name_input")
-
-    comment = st.text_area("댓글을 입력하세요", key="comment_input")
-
-    submitted = st.form_submit_button("댓글 남기기")
-
-
-    if submitted:
-
-        if name.strip() and comment.strip():
-
-            st.session_state.comments.append((name.strip(), comment.strip()))
-
-            st.success("댓글이 저장되었습니다.")
-
-        else:
-
-            st.warning("이름과 댓글을 모두 입력해주세요.")
-
-
-if st.session_state.comments:
-
-    st.subheader("📋 전체 댓글")
-
-    for i, (n, c) in enumerate(reversed(st.session_state.comments), 1):
-
-        st.markdown(f"**{i}. {n}**: {c}")
-
-else:
-
-    st.info("아직 댓글이 없습니다. 첫 댓글을 남겨보세요!")
-
+    status_text.text("시뮬레이션이 정지되었습니다. '시뮬레이션 시작'을 누르세요.")
